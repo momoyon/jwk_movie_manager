@@ -42,42 +42,98 @@ struct Datetime {
 Datetime get_current_datetime(void);
 bool parse_datetime(const char *str, Datetime *dt);
 
+/// :movie ///
+typedef struct Movie Movie;
+
+struct Movie {
+	const char *name;
+	const char *filepath;
+};
+
+/// :scheduled_movie ///
+typedef struct Scheduled_movie Scheduled_movie;
+
+struct Scheduled_movie {
+	Movie movie;
+	Datetime date;
+};
+
+/// :scheduled_movies ///
+typedef struct Scheduled_movies Scheduled_movies;
+
+struct Scheduled_movies {
+	Scheduled_movie *items;
+	size_t count;
+	size_t capacity;
+};
+
+
+/// :movie_man ///
+typedef struct Movie_man Movie_man;
+
+struct Movie_man {
+	Scheduled_movies scheduled_movies;
+};
+
+bool load_movie_manager_from_config(Movie_man *mman, const char *path);
+bool save_movie_manager_to_config(Movie_man *mman, const char *path);
+
 int main(int argc, char **argv) {
 	ASSERT(strcmp(get_os(), "Windows") == 0, "This program only supports Windows at the moment!");
 	const char *program = shift_args(argv, argc);
 
-	const char *schedule_config_filepath = "./schedule.config";
+	const char *config_path = "./config.momo";
 
 	if (argc <= 0) {
 		usage(stdout, program);
 		return 0;
 	}
 
+	Movie_man mman = {0};
+
 	// log_debug("Current datetime: "DATETIME_FMT, DATETIME_ARG(get_current_datetime()));
 
+	// Parse subcommands
 	while (argc > 0) {
 		const char *arg = shift_args(argv, argc);
 
 		if (strcmp(arg, "add") == 0) {
 			if (argc <= 0) {
-				log_error("`add` subcommand expects <movie> and <date> as arguments!");
+				log_error("`add` subcommand expects <movie> <movie_filepath> and <date> as arguments!");
 				return 1;
 			}
 
-			const char *movie = shift_args(argv, argc);
+			const char *movie_name = shift_args(argv, argc);
 			if (argc <= 0) {
-				log_error("`add` subcommand expects <movie> and <date> as arguments!");
+				log_error("`add` subcommand expects <movie> <movie_filepath> and <date> as arguments!");
 				return 1;
 			}
+
+			const char *movie_filepath = shift_args(argv, argc);
+			if (argc <= 0) {
+				log_error("`add` subcommand expects <movie> <movie_filepath> and <date> as arguments!");
+				return 1;
+			}
+
 			const char *date = shift_args(argv, argc);
 
 			Datetime dt = {0};
 			if (!parse_datetime(date, &dt)) {
 				return 1;
 			}
+			Movie movie = {
+				.name = movie_name,
+				.filepath = movie_filepath,
+			};
 
+			Scheduled_movie schm = {
+				.movie = movie,
+				.date = dt,
+			};
+
+			darr_append(mman.scheduled_movies, schm);
+			save_movie_manager_to_config(&mman, config_path);
 			// log_debug("Scheduling movie `%s` for date "DATETIME_FMT, movie, DATETIME_ARG(dt));
-			TODO("add subcmd");
 		} else if (strcmp(arg, "help") == 0) {
 			help(stdout, program);
 			return 0;
@@ -96,8 +152,8 @@ void help(FILE *f, const char *program) {
 	usage(f, program);
 	fprintf(f, "\n");
 	fprintf(f, "Subcommands:\n");
-	fprintf(f, "  help               -    Prints this help message.\n");
-	fprintf(f, "  add <movie> <date> -    Schedules <movie> for date <date>.\n");
+	fprintf(f, "  help                                -    Prints this help message.\n");
+	fprintf(f, "  add <movie> <movie_filepath> <date> -    Schedules <movie> located at <movie_filepath> for date <date>.\n");
 }
 
 /// :datetime ///
@@ -223,5 +279,45 @@ bool parse_datetime(const char *str, Datetime *dt) {
 
 	// log_debug("Datetime parsed: "DATETIME_FMT, DATETIME_ARG(*dt));
 
+	return true;
+}
+
+/// :movie_man ///
+bool load_movie_manager_from_config(Movie_man *mman, const char *path) {
+	int filesize = -1;
+	const char *file = read_file(path, &filesize); // @malloc
+	if (filesize == -1) {
+		return false;
+	}
+
+	String_view sv = SV(file);
+
+	sv_trim(&sv);
+
+	
+	free((void *)file);
+	return true;
+}
+
+bool save_movie_manager_to_config(Movie_man *mman, const char *path) {
+	if (mman == NULL) {
+		log_error("Failed to save movie_manager to config: movie_man is NULL!");
+		return false;
+	}
+	FILE *f = NULL;
+
+	if (fopen_s(&f, path, "w") != 0) {
+		log_error("Failed to open file `%s` for writing!", path);
+		return false;
+	}
+
+	fprintf(f, "movies_count: %zu\n", mman->scheduled_movies.count);
+
+	for (int i = 0; i < mman->scheduled_movies.count; ++i) {
+		Scheduled_movie *schm = &mman->scheduled_movies.items[i];
+		fprintf(f, "%s|%s|"DATETIME_FMT"\n", schm->movie.name, schm->movie.filepath, DATETIME_ARG(schm->date));
+	}
+
+	fclose(f);
 	return true;
 }
