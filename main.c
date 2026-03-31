@@ -90,6 +90,9 @@ int main(int argc, char **argv) {
 	}
 
 	Movie_man mman = {0};
+	if (!load_movie_manager_from_config(&mman, config_path)) {
+		return 1;
+	}
 
 	// log_debug("Current datetime: "DATETIME_FMT, DATETIME_ARG(get_current_datetime()));
 
@@ -137,6 +140,15 @@ int main(int argc, char **argv) {
 		} else if (strcmp(arg, "help") == 0) {
 			help(stdout, program);
 			return 0;
+		} else if (strcmp(arg, "ls") == 0) {
+			if (mman.scheduled_movies.count <= 0) {
+				log_error("No movies are scheduled!");
+			} else {
+				for (int i = 0; i < mman.scheduled_movies.count; ++i) {
+					Scheduled_movie schm = mman.scheduled_movies.items[i];
+					log_info("[%d] %s %s - "DATETIME_FMT, i, schm.movie.name, schm.movie.filepath, DATETIME_ARG(schm.date));
+				}
+			}
 		} else {
 			usage(stderr, program);
 			log_error("Unrecognized subcommand `%s`", arg);
@@ -154,6 +166,7 @@ void help(FILE *f, const char *program) {
 	fprintf(f, "Subcommands:\n");
 	fprintf(f, "  help                                -    Prints this help message.\n");
 	fprintf(f, "  add <movie> <movie_filepath> <date> -    Schedules <movie> located at <movie_filepath> for date <date>.\n");
+	fprintf(f, "  ls                                  -    Lists all the scheduled movies.\n");
 }
 
 /// :datetime ///
@@ -282,6 +295,46 @@ bool parse_datetime(const char *str, Datetime *dt) {
 	return true;
 }
 
+// Keyvalue is one per line Eg: `Key:Value\n`
+static bool parse_kv(String_view *sv, String_view *key, String_view *value) {
+	sv_trim(sv);
+
+	if (sv == NULL || key == NULL || value == NULL) {
+		log_error("parse_kv: Please provide non-NULL arguments!");
+		return false;
+	}
+
+	if (sv->count == 0) {
+		log_error("parse_kv: SV is empty!");
+		return false;
+	}
+
+	if (!sv_contains_char(*sv, ':')) {
+		log_error("parse_kv: SV doesn't contain `:`!");
+		return false;
+	}
+
+	*key = sv_lpop_until_char(sv, ':');
+	sv_lremove(sv, 1); // Remove :
+	sv_ltrim(sv);
+
+	if (sv->count == 0) {
+		log_error("parse_kv: Expected value after key!");
+		return false;
+	}
+
+	if (!sv_contains_char(*sv, '\n')) {
+		log_error("parse_kv: SV doesn't contain NL!");
+		return false;
+	}
+
+	*value = sv_lpop_until_char(sv, '\n');
+	sv_lremove(sv, 1); // Remove NL
+	sv_ltrim(sv);
+
+	return true;
+}
+
 /// :movie_man ///
 bool load_movie_manager_from_config(Movie_man *mman, const char *path) {
 	int filesize = -1;
@@ -294,6 +347,70 @@ bool load_movie_manager_from_config(Movie_man *mman, const char *path) {
 
 	sv_trim(&sv);
 
+	while (sv.count > 0) {
+		String_view key, value = {0};
+		if (!parse_kv(&sv, &key, &value)) {
+			return false;
+		}
+
+		log_debug("Got "SV_FMT" : "SV_FMT, SV_ARG(key), SV_ARG(value));
+
+		if (sv_equals(key, SV("movies_count"))) { 
+			int movies_count_count = -1;
+			int movies_count = sv_to_int(value, &movies_count_count, 10);
+			if (movies_count_count == -1) {
+				log_error("Expected movies_count to have an integer value, could not convert `"SV_FMT"` to an integer", SV_ARG(value));
+				return false;
+			}
+
+			for (int i = 0; i < movies_count; ++i) {
+				String_view movie_name = sv_lpop_until_char(&sv, '|');
+				sv_lremove(&sv, 1); // Remove |
+				sv_ltrim(&sv);
+
+				if (sv.count <= 0) {
+					log_error("Failed to load scheduled movie! Should be in format <movie_name>|<movie_filepath>|<scheduled_datetime>\n per line.");
+					return false;
+				}
+
+				String_view movie_filepath = sv_lpop_until_char(&sv, '|');
+				sv_lremove(&sv, 1); // Remove |
+				sv_ltrim(&sv);
+
+				if (sv.count <= 0) {
+					log_error("Failed to load scheduled movie! Should be in format <movie_name>|<movie_filepath>|<scheduled_datetime>\n per line.");
+					return false;
+				}
+
+				String_view datetime = sv_lpop_until_char(&sv, '\n');
+				sv_lremove(&sv, 1); // Remove NL
+				sv_ltrim(&sv);
+
+				// log_debug("Found scheduled movie "SV_FMT" "SV_FMT" - "SV_FMT, SV_ARG(movie_name), SV_ARG(movie_filepath), SV_ARG(datetime));
+
+				// @memleak @malloc
+				Scheduled_movie schm = {
+				};
+				schm.movie.name     = (const char *)calloc(sizeof(char), movie_name.count+1),
+				schm.movie.filepath = (const char *)calloc(sizeof(char), movie_filepath.count+1),
+
+				memcpy((void *)schm.movie.name, movie_name.data, movie_name.count);
+				memcpy((void *)schm.movie.filepath, movie_filepath.data, movie_filepath.count);
+
+				const char *datetime_str = sv_to_cstr(datetime); // @malloc
+
+				if (!parse_datetime(datetime_str, &schm.date)) {
+					return false;
+				}
+
+				free((void *)datetime_str);
+
+				darr_append(mman->scheduled_movies, schm);
+			}
+		} else {
+			log_error("Ignoring unrecognized key `"SV_FMT"` with value `"SV_FMT"`", SV_ARG(key), SV_ARG(value));
+		}
+	}
 	
 	free((void *)file);
 	return true;
@@ -311,7 +428,7 @@ bool save_movie_manager_to_config(Movie_man *mman, const char *path) {
 		return false;
 	}
 
-	fprintf(f, "movies_count: %zu\n", mman->scheduled_movies.count);
+	fprintf(f, "movies_count:%zu\n", mman->scheduled_movies.count);
 
 	for (int i = 0; i < mman->scheduled_movies.count; ++i) {
 		Scheduled_movie *schm = &mman->scheduled_movies.items[i];
